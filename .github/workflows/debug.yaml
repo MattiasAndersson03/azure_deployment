@@ -1,0 +1,47 @@
+name: Kudu Auth Diagnostic
+
+on:
+  workflow_dispatch:
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Debug: verify publish profile & Kudu auth
+        shell: bash
+        env:
+          PFX: ${{ secrets.AZURE_PUBLISH_PROFILE }}
+        run: |
+          echo "Publish profile length: ${#PFX}"
+          xmlfile=$(mktemp)
+          printf "%s" "$PFX" > "$xmlfile"
+
+          python3 - << 'PY' "$xmlfile"
+            import sys, xml.etree.ElementTree as ET, urllib.request, base64
+            xml = ET.parse(sys.argv[1]).getroot()
+            pp = xml.find(".//publishProfile[@publishMethod='MSDeploy']")
+            if pp is None:
+                print("❌ NO_MSDEPLOY")
+                sys.exit(2)
+            publishUrl = pp.get("publishUrl") or ""
+            msdeploySite = pp.get("msdeploySite") or ""
+            userName = pp.get("userName") or ""
+            userPWD = pp.get("userPWD") or ""
+            scmUri = pp.get("scmUri") or f"https://{msdeploySite}.scm.azurewebsites.net"
+            print("publishUrl:", publishUrl)
+            print("msdeploySite:", msdeploySite)
+            print("scmUri host:", scmUri)
+
+            req = urllib.request.Request(scmUri + "/api/diagnostics/runtime")
+            auth = base64.b64encode(f"{userName}:{userPWD}".encode()).decode()
+            req.add_header("Authorization", "Basic " + auth)
+            try:
+                with urllib.request.urlopen(req, timeout=15) as r:
+                    print("Kudu /diagnostics status:", r.status)
+            except Exception as e:
+                from urllib.error import HTTPError
+                if isinstance(e, HTTPError):
+                    print("Kudu /diagnostics status:", e.code)
+                else:
+                    print("Kudu /diagnostics error:", e)
+            PY
